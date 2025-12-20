@@ -1,0 +1,3 @@
+Pruned 0 (0.0%) samples out of 124995.
+3907/3907 loss: 0.0504 P: 98.34% R: 98.38% F1: 98.36% ET: 40 s
+speed: 3117 samples/second
