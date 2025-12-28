@@ -2,7 +2,11 @@ import os
 import torch
 import sacrebleu
 import math
+import collections
 from bert_score import score as bert_score_func
+from collections import Counter
+from typing import List, Sequence, Union
+import re
 
 class TxtLogger:
     def __init__(self, save_dir, filename="train_log.txt"):
@@ -250,6 +254,86 @@ def batch_beam_search_decode(model, src, src_mask, max_len, start_symbol, end_sy
     
     return best_sequences
 
+Tokens = List[str]
+Sentence = Union[str, Tokens]
+def _tokenize_ws(x: Sentence) -> Tokens:
+    """Whitespace tokenization. Your preds/refs are already space-joined."""
+    return x.split() if isinstance(x, str) else list(x)
+
+def _ngrams(tokens: Tokens, n: int) -> Counter:
+    if len(tokens) < n:
+        return Counter()
+    return Counter(tuple(tokens[i:i+n]) for i in range(len(tokens) - n + 1))
+
+def _closest_ref_len(cand_len: int, ref_lens: List[int]) -> int:
+    # Closest reference length; tie -> shorter
+    return min(ref_lens, key=lambda rl: (abs(rl - cand_len), rl))
+
+def bleu4(
+    candidates: Sequence[Sentence],
+    references: Sequence[Sequence[Sentence]],  # 每条候选可对应多条参考；你现在是 1 条参考，所以传 [[ref], [ref], ...]
+) -> float:
+    """
+    BLEU-4 exactly following your screenshot:
+
+    precision_n = sum_clip_count / sum_count  (corpus-level)
+    BLEU-4 = min(1, output_length / reference_length) * Π_{i=1..4} precision_i
+    """
+    if len(candidates) != len(references):
+        raise ValueError("candidates and references must have the same length")
+
+    clipped_totals = [0, 0, 0, 0, 0]  # index 1..4
+    count_totals   = [0, 0, 0, 0, 0]
+
+    output_length = 0
+    reference_length = 0
+
+    for cand, refs in zip(candidates, references):
+        cand_tok = _tokenize_ws(cand)
+        refs_tok = [_tokenize_ws(r) for r in refs]
+        if len(refs_tok) == 0:
+            raise ValueError("each candidate must have at least one reference")
+
+        # lengths
+        output_length += len(cand_tok)
+        ref_lens = [len(r) for r in refs_tok]
+        reference_length += _closest_ref_len(len(cand_tok), ref_lens)
+
+        # n-grams
+        for n in range(1, 5):
+            cand_counts = _ngrams(cand_tok, n)
+            total_cand = sum(cand_counts.values())
+            count_totals[n] += total_cand
+            if total_cand == 0:
+                continue
+
+            # max ref count per n-gram over refs
+            max_ref_counts = Counter()
+            for r in refs_tok:
+                rc = _ngrams(r, n)
+                for ng, ct in rc.items():
+                    if ct > max_ref_counts[ng]:
+                        max_ref_counts[ng] = ct
+
+            clipped = 0
+            for ng, ct in cand_counts.items():
+                clipped += min(ct, max_ref_counts.get(ng, 0))
+            clipped_totals[n] += clipped
+
+    precisions = []
+    for n in range(1, 5):
+        if count_totals[n] == 0:
+            precisions.append(0.0)
+        else:
+            precisions.append(clipped_totals[n] / count_totals[n])
+
+    bp = 0.0 if reference_length == 0 else min(1.0, output_length / reference_length)
+
+    bleu = bp
+    for p in precisions:
+        bleu *= p
+    return float(bleu)
+
 class MetricCalculator:
     def __init__(self, device="cuda"):
         self.device = device
@@ -266,7 +350,63 @@ class MetricCalculator:
     def compute_bertscore(self, preds, refs):
         P, R, F1 = bert_score_func(preds, refs, lang="en", device=self.device, verbose=False)
         return F1.mean().item() * 100
-    
+    def compute_bleu_4(self, preds, refs):
+        
+        
+        
+        def simple_tokenize(text):
+            
+            return re.findall(r'\w+|[^\w\s]', text)
+
+        
+        cand_tokens_list = [simple_tokenize(p) for p in preds]
+        ref_tokens_list = [simple_tokenize(r) for r in refs]
+
+        
+        
+        
+        precisions = []
+        for n in range(1, 5):
+            numerator = 0
+            denominator = 0
+            
+            for cand_tokens, ref_tokens in zip(cand_tokens_list, ref_tokens_list):
+                cand_ngrams = self._get_ngrams(cand_tokens, n)
+                ref_ngrams = self._get_ngrams(ref_tokens, n)
+                
+                cand_counts = collections.Counter(cand_ngrams)
+                ref_counts = collections.Counter(ref_ngrams)
+                
+                denominator += sum(cand_counts.values())
+                
+                for ngram, count in cand_counts.items():
+                    numerator += min(count, ref_counts.get(ngram, 0))
+            
+            if denominator == 0:
+                precisions.append(0.0)
+            else:
+                precisions.append(numerator / denominator)
+
+        
+        output_length = sum(len(c) for c in cand_tokens_list)
+        reference_length = sum(len(r) for r in ref_tokens_list)
+        
+        if reference_length == 0:
+            bp = 0.0
+        else:
+            bp = min(1.0, output_length / reference_length)
+
+        
+        score = bp
+        for p in precisions:
+            score *= p
+            
+        return score * 100
+    def _get_ngrams(self, tokens, n):
+        
+        if len(tokens) < n:
+            return []
+        return [tuple(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
 
 @torch.no_grad()
 def beam_decode_rnn(
