@@ -13,6 +13,9 @@ from nlp_dataset import NMTDataset, collate_fn, PAD_IDX, SOS_IDX, EOS_IDX
 from RNN import EncoderRNN, LuongAttnDecoderRNN, Seq2Seq
 from Transformer import TransformerNMT
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import warnings
+warnings.filterwarnings("ignore")
+
 pad_id, sos_id, eos_id = 0, 1, 2
 def get_args():
     parser = argparse.ArgumentParser(description='Unified Inference Script for RNN, Transformer, and NLLB')
@@ -28,7 +31,7 @@ def get_args():
 
     # Checkpoints
     parser.add_argument('--rnn_ckpt', type=str, default='/mnt/afs/250010063/AP0004_Midterm/NMT_Project/results/RNN_Luong_general/best_model.pth')
-    parser.add_argument('--trans_ckpt', type=str, default='/mnt/afs/250010063/AP0004_Midterm/NMT_Project/results/Transformer_learable_8e4_layernorm/best_model.pth')
+    parser.add_argument('--trans_ckpt', type=str, default='/mnt/afs/250010063/AP0004_Midterm/NMT_Project/results/Transformer_lr_2e3/best_model.pth')
     parser.add_argument('--nllb_path', type=str, default='/mnt/afs/250010063/AP0004_Midterm/NMT_Project/results/nllb_600m_zh2en/final')
 
     # Model Hyperparameters (Must match training)
@@ -140,8 +143,9 @@ def evaluate_custom_model(model_name, model, dataloader, trg_vocab, device, args
     # Metrics
     bleu = calc.compute_bleu(preds_str, refs_str)
     bert = calc.compute_bertscore(preds_str, refs_str)
-    
-    return {"BLEU": bleu, "BERTScore": bert}, preds_str, refs_str
+    bleu4 = calc.compute_bleu(preds_str, refs_str)
+
+    return {"BLEU": bleu, "BERTScore": bert, "BLEU4": bleu4}, preds_str, refs_str
 
 
 def evaluate_nllb(model_path, test_file, device, args, calc):
@@ -186,8 +190,8 @@ def evaluate_nllb(model_path, test_file, device, args, calc):
     # Metrics
     bleu = calc.compute_bleu(preds_str, refs_str)
     bert = calc.compute_bertscore(preds_str, refs_str)
-    
-    return {"BLEU": bleu, "BERTScore": bert}, preds_str, refs_str, srcs_str
+    bleu4 = calc.compute_bleu_4(preds_str, refs_str)
+    return {"BLEU": bleu, "BERTScore": bert, "BLEU4": bleu4}, preds_str, refs_str, srcs_str
 
 
 # ==========================================
@@ -224,7 +228,7 @@ def main():
         
         metric_calc = MetricCalculator(device=str(device))
 
-        loss, ppl, bleu, bertscore = evaluate_rnn_metrics(
+        loss, ppl, bleu, bleu4, bertscore = evaluate_rnn_metrics(
             model=model,
             dataloader=test_loader,
             criterion=criterion,
@@ -241,7 +245,7 @@ def main():
         )
         print("For RNN")
         print(
-            f"BLEU: {bleu:.4f}, BERTScore: {bertscore:3.2f}%"
+            f"BLEU4: {bleu4:.4f}, BLEU: {bleu:.4f}, BERTScore: {bertscore:3.2f}%"
         )
 
     # --- 3. Evaluate Transformer ---
@@ -256,7 +260,7 @@ def main():
         ckpt = torch.load(args.trans_ckpt, map_location=device)
         model.load_state_dict(ckpt['model'])
         
-        loss, ppl, bleu, bertscore = evaluate_transformer(
+        loss, ppl, bleu, bleu4, bertscore = evaluate_transformer(
             model, 
             test_loader, 
             criterion, 
@@ -268,7 +272,7 @@ def main():
         )
         print("For transformer")
         print(
-            f"Test bleu: {bleu:.4f}, Test bert score: {bertscore:3.2f}%"
+            f"Test bleu: {bleu:.4f}, Test bleu4: {bleu4:.4f},Test bert score: {bertscore:3.2f}%"
         )
 
     # --- 4. Evaluate NLLB ---
@@ -278,7 +282,7 @@ def main():
         results_summary['NLLB'] = metrics
         print("For NLLB")
         print(
-            f"Test bleu: {metrics['BLEU']:.4f}, Test bert score: {metrics['BERTScore']:3.2f}%"
+            f"Test bleu: {metrics['BLEU']:.4f}, Test bleu4: {metrics['BLEU4']:.4f},Test bert score: {metrics['BERTScore']:3.2f}%"
         )
 
 
